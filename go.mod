@@ -21,7 +21,7 @@ require (
 	github.com/pkg/profile v1.7.0
 	github.com/prometheus/client_golang v1.24.1
 	github.com/rogpeppe/fastuuid v1.2.0
-	github.com/sergi/go-diff v1.4.0
+	github.com/sergi/go-diff v1.4.5
 	github.com/tg123/go-htpasswd v1.2.5
 	golang.org/x/net v0.60.0
 	golang.org/x/sync v0.23.0
