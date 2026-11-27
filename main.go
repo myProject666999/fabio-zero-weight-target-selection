@@ -254,7 +254,12 @@ func lookupDynamicTcpHostFn(cfg *config.Config, notFound gkm.Counter) func([]str
 	pick := route.Picker[cfg.Proxy.Strategy]
 	return func(hosts []string) *route.Target {
 		for _, host := range hosts {
-			t := route.GetTable().LookupHost(host, pick)
+			t, matched := route.GetTable().LookupHostMatched(host, pick)
+			if matched && t == nil {
+				// The host matched but all its targets are drained. Do not
+				// try the next host since that would route to another service.
+				break
+			}
 			if t != nil {
 				return t
 			}

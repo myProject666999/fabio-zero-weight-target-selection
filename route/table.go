@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math"
 	"net"
 	"net/http"
 	"net/url"
@@ -22,6 +23,7 @@ import (
 var errInvalidPrefix = errors.New("route: prefix must not be empty")
 var errInvalidTarget = errors.New("route: target must not be empty")
 var errNoMatch = errors.New("route: no target match")
+var errInvalidWeight = errors.New("route: weight must not be empty")
 
 // table stores the active routing table. Must never be nil.
 var table atomic.Value
@@ -271,6 +273,13 @@ func (t Table) weighRoute(d *RouteDef) error {
 		return errInvalidPrefix
 	}
 
+	// A route weight command without a weight (custom backend JSON that omits
+	// the weight field) must not be interpreted as weight 0 since that would
+	// drain every matching target. Treat it as an invalid command instead.
+	if math.IsNaN(d.Weight) {
+		return errInvalidWeight
+	}
+
 	if t[host] == nil || t[host].find(path) == nil {
 		return errNoMatch
 	}
@@ -468,6 +477,12 @@ func ReverseHostPort(s string) string {
 // or nil if there is none. It first checks the routes for the host
 // and if none matches then it falls back to generic routes without
 // a host. This is useful for a catch-all '/' rule.
+//
+// If a route matches but all of its targets have been drained (all weights
+// are 0) then the lookup stops and returns nil. It does not fall through to
+// less specific paths, other hosts or the generic route since that would hand
+// the request to a different service than the one which was drained
+// intentionally. The caller treats the nil result as "no route".
 func (t Table) Lookup(req *http.Request, pick picker, match matcher, globCache *GlobCache, globDisabled bool) (target *Target) {
 
 	var hosts []string
@@ -484,7 +499,12 @@ func (t Table) Lookup(req *http.Request, pick picker, match matcher, globCache *
 
 	hosts = append(hosts, "")
 	for _, h := range hosts {
-		if target = t.lookup(h, req.URL.Path, pick, match); target != nil {
+		var matched bool
+		if target, matched = t.lookup(h, req.URL.Path, pick, match); matched && target == nil {
+			// matched but drained: do not fall through to another route
+			return nil
+		}
+		if target != nil {
 			if target.RedirectCode != 0 {
 				req.URL.Host = req.Host
 				target.BuildRedirectURL(req.URL) // build redirect url and cache in target
@@ -502,29 +522,50 @@ func (t Table) Lookup(req *http.Request, pick picker, match matcher, globCache *
 	return target
 }
 
+// LookupHost returns the target for the given host or nil if there is none.
+// A matched route whose targets are all drained also yields nil.
 func (t Table) LookupHost(host string, pick picker) *Target {
+	target, _ := t.lookup(host, "/", pick, prefixMatcher)
+	return target
+}
+
+// LookupHostMatched is like LookupHost but also reports whether a route
+// matched at all. A matched route whose targets are all drained returns
+// (nil, true) so callers which probe several hosts can stop instead of
+// falling back to a different host (and thus a different service).
+func (t Table) LookupHostMatched(host string, pick picker) (*Target, bool) {
 	return t.lookup(host, "/", pick, prefixMatcher)
 }
 
-func (t Table) lookup(host, path string, pick picker, match matcher) *Target {
+// lookup returns the target picked from the first matching route for
+// host/path. The second return value reports whether a route matched at all.
+// A matched route with no remaining targets (all drained) returns
+// (nil, true) so callers can tell it apart from "no match" (nil, false).
+func (t Table) lookup(host, path string, pick picker, match matcher) (*Target, bool) {
 	host = strings.ToLower(host) // routes are always added lowercase
 	for _, r := range t[host] {
-		if match(path, r) {
-			n := len(r.Targets)
-			if n == 0 {
-				return nil
-			}
-
-			var target *Target
-			if n == 1 {
-				target = r.Targets[0]
-			} else {
-				target = pick(r)
-			}
-			return target
+		if !match(path, r) {
+			continue
 		}
+
+		// A target list can be empty after all targets have been deleted.
+		// In that case the route no longer matches (issue 57).
+		if len(r.Targets) == 0 {
+			return nil, false
+		}
+
+		// If every target has been drained then the route matches but there
+		// is intentionally no target to send traffic to.
+		if r.drained {
+			return nil, true
+		}
+
+		if len(r.Targets) == 1 {
+			return r.Targets[0], true
+		}
+		return pick(r), true
 	}
-	return nil
+	return nil, false
 }
 
 func (t Table) config(addWeight bool) []string {

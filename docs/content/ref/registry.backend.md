@@ -34,5 +34,8 @@ To configure routes Fabio uses a Config Language, specified [here](https://fabio
 - src - usually the prefix that will be used in the routing table.
 - dst - the endpoint that will be used as the destination of the routing table. 
 - weight - defines the weight of this path to perform routing. For example route A 90% and route B 10% for canary deployments.
+  If the field is omitted the target has no fixed weight and shares the remaining traffic evenly with the other
+  dynamic targets. An explicit `0` drains the target: it receives no traffic. For `route weight` commands the field
+  is required; a command without it is invalid and ignored.
 - tags - a list of tags, provide a way to filter routes, making it easier to do operations like bulk deletes `route del tags "dev"`. 
 - opts - a KV map of the config language list of options. for example `proto` or `prefix`

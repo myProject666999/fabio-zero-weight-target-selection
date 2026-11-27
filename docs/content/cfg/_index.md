@@ -81,12 +81,19 @@ Directs a certain amount of traffic to instances matching certain criteria.
 
 The weight `w` is expressed as follows:
 
- * `w` is a float >= 0 describing a percentage, e.g. 0.5 == 50%
+ * `w` is a float describing a percentage, e.g. 0.5 == 50%
  * `w < 0`: means no fixed weighting. Traffic is evenly distributed
+ * `w == 0`: the matching targets receive no traffic. If all targets of a
+   matching route have weight 0 the request has no route (`404` by default).
  * `w > 0`: route will receive n% of traffic. If sum(w) > 1 then w is normalized.
  * `sum(w) >= 1`: only matching services will receive traffic
 
 Note that the total sum of traffic sent to all matching routes is `w`%.
+
+A route which matched but whose targets are all drained (weight 0) is
+terminal: the request is not falling through to a less specific path, another
+host or the generic route without a host. Instead it is answered as "no
+route" (`proxy.noroutestatus`, `404` by default).
 
 The order of commands matters but routes are always ordered from most to least
 specific by prefix length.

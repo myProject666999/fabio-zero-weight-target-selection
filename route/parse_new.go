@@ -55,8 +55,10 @@ route weight <svc> <src> weight <w>
 route weight service host/path weight w tags "tag1,tag2"
   - Route w% of traffic to all services matching service, host/path and tags
 
-    w is a float > 0 describing a percentage, e.g. 0.5 == 50%
-    w <= 0: means no fixed weighting. Traffic is evenly distributed
+    w is a float describing a percentage, e.g. 0.5 == 50%
+    w < 0: means no fixed weighting. Traffic is evenly distributed
+    w == 0: the target(s) receive no traffic (drained). If all targets of a
+            matching route are drained the request has no route.
     w > 0: route will receive n% of traffic. If sum(w) > 1 then w is normalized.
     sum(w) >= 1: only matching services will receive traffic
 

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"github.com/fabiolb/fabio/transport"
 	"log"
+	"math"
 	"net/url"
 	"reflect"
 	"slices"
@@ -39,14 +40,27 @@ type Route struct {
 	// wTargets contains targets distributed according to their weight
 	wTargets []*Target
 
+	// drained is true when the route has targets but all of them have been
+	// drained (weight 0). Such a route matches but intentionally has no
+	// target to send traffic to. It is computed in weighTargets.
+	drained bool
+
 	// total contains the total number of requests for this route.
 	// Used by the RRPicker
 	total uint64
 }
 
 func (r *Route) addTarget(service string, targetURL *url.URL, fixedWeight float64, tags []string, opts map[string]string) {
-	if fixedWeight < 0 {
+	switch {
+	case math.IsNaN(fixedWeight):
+		// a missing weight is dynamic, never a fixed weight
 		fixedWeight = -1
+	case fixedWeight < 0:
+		fixedWeight = -1
+	case fixedWeight == 0:
+		// normalize -0.0 so that it is indistinguishable from 0.0
+		// and does not show up as "-0.0000" in the generated config.
+		fixedWeight = math.Abs(fixedWeight)
 	}
 
 	// de-dup existing target
@@ -139,6 +153,10 @@ func (r *Route) setWeight(service string, weight float64, tags []string) int {
 	// of traffic to all matching routes combined.
 	n := loop(-1)
 	w := weight / float64(n)
+	if w == 0 {
+		// normalize -0.0 so that a weight of -0 behaves exactly like 0
+		w = math.Abs(w)
+	}
 	loop(w)
 
 	if n > 0 {
@@ -185,10 +203,18 @@ func (r *Route) TargetConfig(t *Target, addWeight bool) string {
 
 // config returns the route configuration in the config language.
 // with the weights specified by the user.
+//
+// When addWeight is true only targets which receive traffic are emitted.
+// This is the view used for the normalized config and tests.
+//
+// When addWeight is false (Table.String) every target is emitted, including
+// drained targets (weight 0) and dynamic targets which were assigned a share
+// of 0 because the fixed weights already add up to 100%. Otherwise reading
+// the table back would produce a different set of targets and fixed weights.
 func (r *Route) config(addWeight bool) []string {
 	var cfg []string
 	for _, t := range r.Targets {
-		if t.Weight <= 0 {
+		if addWeight && t.Weight <= 0 {
 			continue
 		}
 		cfg = append(cfg, r.TargetConfig(t, addWeight))
@@ -224,11 +250,17 @@ func (r *Route) weighTargets() {
 	// if there are no targets with fixed weight then each target simply gets
 	// an equal amount of traffic
 	if nFixed == 0 {
+		if len(r.Targets) == 0 {
+			r.wTargets = nil
+			r.drained = false
+			return
+		}
 		w := 1.0 / float64(len(r.Targets))
 		for _, t := range r.Targets {
 			t.Weight = w
 		}
 		r.wTargets = r.Targets
+		r.drained = false
 		return
 	}
 
@@ -239,9 +271,12 @@ func (r *Route) weighTargets() {
 	}
 
 	// compute the weight for the targets with dynamic weights
-	dynamic := (1 - sumFixed) / float64(len(r.Targets)-nFixed)
-	if dynamic < 0 {
-		dynamic = 0
+	dynamic := 0.0
+	if n := len(r.Targets) - nFixed; n > 0 {
+		dynamic = (1 - sumFixed) / float64(n)
+		if dynamic < 0 {
+			dynamic = 0
+		}
 	}
 
 	// assign the actual weight to each target
@@ -314,6 +349,7 @@ func (r *Route) weighTargets() {
 	}
 
 	r.wTargets = targets
+	r.drained = len(r.Targets) > 0 && len(targets) == 0
 }
 
 type byN []struct{ i, n int }
